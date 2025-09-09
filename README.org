@@ -1,0 +1,104 @@
+#+TITLE: lnpm.nvim - Lightweight Neovim Plugin Manager
+#+AUTHOR: lumetas
+#+DESCRIPTION: Minimal plugin manager for Neovim with lazy loading capabilities
+
+* Installation
+
+Clone the repository to your Neovim runtime path:
+
+#+BEGIN_SRC bash
+git clone https://github.com/lumetas/lnpm.nvim.git ~/.config/nvim/pack/plugin/start/lnpm.nvim
+#+END_SRC
+
+* Configuration
+
+** Basic setup
+
+Add this to your =init.lua=:
+
+#+BEGIN_SRC lua
+local lnpm = require('lnpm')
+
+lnpm.setup({
+    install_path = vim.fn.stdpath('config') .. '/pack/plugin/start/',
+    git = true,      -- Keep .git directory after installation
+    name = false,    -- Use custom module name
+    alias = false    -- Use custom alias for plugin object
+})
+#+END_SRC
+
+* Usage
+
+** Loading plugins
+
+#+BEGIN_SRC lua
+-- Basic usage
+lnpm.load('user/repo')
+
+-- With setup function
+lnpm.load('nvim-treesitter/nvim-treesitter', function(ts)
+    ts.setup({
+        ensure_installed = {"lua", "python", "javascript"},
+        highlight = {enable = true}
+    })
+end)
+
+-- With custom options
+lnpm.load('williamboman/mason.nvim', nil, {
+    git = false,    -- Remove .git after installation
+    name = 'mason', -- Custom module name
+    alias = 'mason' -- Custom alias for object
+})
+#+END_SRC
+
+** Creating plugin objects
+
+#+BEGIN_SRC lua
+-- Create object from installed plugin
+local telescope = lnpm.make('nvim-telescope/telescope.nvim')
+
+-- With custom name
+local mason = lnpm.make('williamboman/mason.nvim', {name = 'mason'})
+
+-- Force recreation
+local treesitter = lnpm.make('nvim-treesitter/nvim-treesitter', {force = true})
+#+END_SRC
+
+** Bulk loading
+
+#+BEGIN_SRC lua
+local plugins = {
+    {'nvim-lualine/lualine.nvim', function(lualine) lualine.setup() end},
+    {'akinsho/bufferline.nvim', nil, {git = false}},
+    {'folke/which-key.nvim', function(wk) wk.setup() end}
+}
+
+lnpm.load_all(plugins)
+#+END_SRC
+
+* Commands
+
+| Command          | Description                     |
+|------------------+---------------------------------|
+| =:LnpmList=      | Show plugin status              |
+| =:LnpmClean=     | List orphan plugins             |
+| =:LnpmClean!=    | Remove orphan plugins           |
+| =:LnpmUpdate=    | Update all plugins              |
+| =:LnpmInstall=   | Install specific plugin         |
+| =:LnpmMake=      | Create plugin object            |
+
+* Features
+
+- **Lightweight**: Minimal dependencies and overhead
+- **Lazy loading**: Plugins load only when needed
+- **Git integration**: Automatic cloning and updating
+- **Orphan cleanup**: Remove unused plugins easily
+- **Object management**: Create and manage plugin objects
+- **Custom configuration**: Flexible setup options
+
+* Requirements
+
+- Neovim 0.7+
+- Git (for plugin installation)
+- Internet connection (for initial setup)
+
