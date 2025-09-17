@@ -69,11 +69,6 @@ local function install_plugin(repo, opts, callback)
 				-- Обновляем кэш статуса
 				M.installation_status[plugin_name] = true
 
-				-- Вызываем колбек установки
-				if opts.onInstall then
-					opts.onInstall()
-				end
-
 				vim.schedule(function()
 					callback(true)
 				end)
@@ -439,6 +434,10 @@ function M.load_after_install()
 		local opts = plugin_spec[3] or {}
 
 		M.finalize_load(repo, callback, opts)
+		if opts.onInstall then
+			opts.onInstall()
+		end
+
 	end
 	print("✅ All plugins installed")
 end
