@@ -2,7 +2,7 @@ local M = {}
 local plugins_b_installing = 0
 local wait_installing = 0
 M.config = {
-	install_path = vim.fn.stdpath('config') .. '/pack/plugin/start/',
+	install_path = vim.fn.stdpath('config') .. '/pack/plugin/opt/',
 	git = true,
 	name = false,
 	alias = false,
@@ -119,6 +119,7 @@ function M.finalize_load(repo, setup_callback, opts)
 	local plugin_path = M.config.install_path .. plugin_name
 
 	if opts.name ~= false then
+		plugin_path_name = plugin_name
 		plugin_name = opts.name
 	end
 
@@ -139,6 +140,7 @@ function M.finalize_load(repo, setup_callback, opts)
 
 	
 	local load_callback = function()
+		vim.cmd("packadd " .. plugin_path_name)
 		local ok, plugin = pcall(require, plugin_name)
 		if ok and plugin then
 			if opts.alias ~= false then
