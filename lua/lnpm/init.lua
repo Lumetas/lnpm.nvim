@@ -5,7 +5,8 @@ M.config = {
 	install_path = vim.fn.stdpath('config') .. '/pack/plugin/start/',
 	git = true,
 	name = false,
-	alias = false
+	alias = false,
+	lrule = false
 }
 
 local after_install_plugins_list = {}
@@ -93,7 +94,8 @@ function M.load(repo, setup_callback, opts)
 		name = plugin_name,
 		repo = repo,
 		opts = opts,
-		loaded = false
+		loaded = false,
+		lrule = opts.lrule or false
 	}
 
 	if not plugin_installed(plugin_name) then
@@ -134,36 +136,44 @@ function M.finalize_load(repo, setup_callback, opts)
 		vim.opt.rtp:prepend(plugin_path)
 	end
 
-	-- Загружаем плагин
-	local ok, plugin = pcall(require, plugin_name)
-	if ok and plugin then
-		if opts.alias ~= false then
-			M.plugin_objects[opts.alias] = plugin
-		else 
-			M.plugin_objects[repo] = plugin
-		end
 
-		if setup_callback then
-			setup_callback(plugin)
-		elseif plugin.setup then
-			plugin.setup()
-		end
+	
+	local load_callback = function()
+		local ok, plugin = pcall(require, plugin_name)
+		if ok and plugin then
+			if opts.alias ~= false then
+				M.plugin_objects[opts.alias] = plugin
+			else 
+				M.plugin_objects[repo] = plugin
+			end
 
-		M.registered_plugins[repo].loaded = true
-		M.loaded_plugins[plugin_name] = true
+			if setup_callback then
+				setup_callback(plugin)
+			elseif plugin.setup then
+				plugin.setup()
+			end
+
+			M.registered_plugins[repo].loaded = true
+			M.loaded_plugins[plugin_name] = true
+		else
+			-- Загружаем файлы плагина
+			vim.cmd('runtime! plugin/**/*.vim')
+			vim.cmd('runtime! plugin/**/*.lua')
+
+			if setup_callback then
+				local minimal_plugin = {
+					setup = function(config) end
+				}
+				setup_callback(minimal_plugin)
+			end
+
+			M.registered_plugins[repo].loaded = true
+		end
+	end
+	if opts.lrule then
+		opts.lrule(load_callback)
 	else
-		-- Загружаем файлы плагина
-		vim.cmd('runtime! plugin/**/*.vim')
-		vim.cmd('runtime! plugin/**/*.lua')
-
-		if setup_callback then
-			local minimal_plugin = {
-				setup = function(config) end
-			}
-			setup_callback(minimal_plugin)
-		end
-
-		M.registered_plugins[repo].loaded = true
+		load_callback()
 	end
 end
 
