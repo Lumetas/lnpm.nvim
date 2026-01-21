@@ -62,6 +62,7 @@ local function install_plugin(repo, opts, callback)
     vim.fn.jobstart(cmd, {
         on_exit = function(_, code)
             if code == 0 then
+				vim.notify('Installed ' .. plugin_name, vim.log.levels.INFO)
                 -- Удаляем .git если требуется
                 if opts.git == false then
                     local git_dir = install_dir .. '/.git'
