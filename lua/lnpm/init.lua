@@ -536,63 +536,101 @@ end
 function M.update()
     print("🔄 Updating plugins...")
     local plugins_dir = M.config.install_path
-    local updated_count = 0
     local lock = read_lock_file()
 
     local handle = io.popen('find "' .. plugins_dir .. '" -name ".git" -type d 2>/dev/null')
+    local plugins_to_update = {}
 
     if handle then
         for git_dir in handle:lines() do
             local plugin_dir = git_dir:gsub('/.git$', '')
             local plugin_name = plugin_dir:match("([^/]+)$")
-
             if vim.fn.isdirectory(git_dir) == 1 then
-                print('Updating: ' .. plugin_name)
-
-                local fetch_cmd = string.format('git -C "%s" fetch origin', plugin_dir)
-                vim.fn.system(fetch_cmd)
-
-                local reset_cmd = string.format('git -C "%s" reset --hard origin/HEAD', plugin_dir)
-                local result = vim.fn.system(reset_cmd)
-
-                if vim.v.shell_error == 0 then
-                    updated_count = updated_count + 1
-                    local hash = get_commit_hash(plugin_dir)
-                    if hash then
-                        local found = false
-                        for repo, info in pairs(lock) do
-                            if get_plugin_name(repo) == plugin_name then
-                                lock[repo].hash = hash
-                                found = true
-                                break
-                            end
-                        end
-                        if not found then
-                            local remote_cmd = string.format('git -C "%s" remote get-url origin', plugin_dir)
-                            local remote = vim.fn.system(remote_cmd):gsub('%s+', '')
-                            local repo_url = plugin_name
-                            if remote ~= '' and vim.v.shell_error == 0 then
-                                repo_url = remote:gsub('^https://github.com/', ''):gsub('%.git$', '')
-                            end
-                            lock[repo_url] = {
-                                name = plugin_name,
-                                hash = hash
-                            }
-                        end
-                    end
-                    print('✅ Updated: ' .. plugin_name)
-                else
-                    print('❌ Failed to update: ' .. plugin_name .. ': ' .. result)
-                end
-            else
-                print('⏭️  Skipping (no git): ' .. plugin_name)
+                table.insert(plugins_to_update, {
+                    plugin_dir = plugin_dir,
+                    plugin_name = plugin_name,
+                    git_dir = git_dir
+                })
             end
         end
         handle:close()
     end
 
-    write_lock_file(lock)
-    print(string.format("\n🎉 Updated %d plugins", updated_count))
+    if #plugins_to_update == 0 then
+        print("No plugins to update")
+        return 0
+    end
+
+    local total = #plugins_to_update
+    local completed = 0
+    local updated_count = 0
+
+    for _, plugin_info in ipairs(plugins_to_update) do
+        local plugin_dir = plugin_info.plugin_dir
+        local plugin_name = plugin_info.plugin_name
+
+        print('Updating: ' .. plugin_name)
+
+        vim.fn.jobstart({'git', '-C', plugin_dir, 'fetch', 'origin'}, {
+            on_exit = function(_, fetch_code)
+                if fetch_code ~= 0 then
+                    vim.schedule(function()
+                        print('❌ Fetch failed: ' .. plugin_name)
+                    end)
+                    return
+                end
+
+                vim.fn.jobstart({'git', '-C', plugin_dir, 'reset', '--hard', 'origin/HEAD'}, {
+                    on_exit = function(_, reset_code)
+                        completed = completed + 1
+
+                        if reset_code == 0 then
+                            updated_count = updated_count + 1
+                            vim.schedule(function()
+                                print('✅ Updated: ' .. plugin_name .. ' (' .. completed .. '/' .. total .. ')')
+                            end)
+
+                            local hash = get_commit_hash(plugin_dir)
+                            if hash then
+                                local found = false
+                                for repo, info in pairs(lock) do
+                                    if get_plugin_name(repo) == plugin_name then
+                                        lock[repo].hash = hash
+                                        found = true
+                                        break
+                                    end
+                                end
+                                if not found then
+                                    local remote_cmd = string.format('git -C "%s" remote get-url origin', plugin_dir)
+                                    local remote = vim.fn.system(remote_cmd):gsub('%s+', '')
+                                    local repo_url = plugin_name
+                                    if remote ~= '' and vim.v.shell_error == 0 then
+                                        repo_url = remote:gsub('^https://github.com/', ''):gsub('%.git$', '')
+                                    end
+                                    lock[repo_url] = {
+                                        name = plugin_name,
+                                        hash = hash
+                                    }
+                                end
+                            end
+                        else
+                            vim.schedule(function()
+                                print('❌ Failed to update: ' .. plugin_name)
+                            end)
+                        end
+
+                        if completed == total then
+                            vim.schedule(function()
+                                write_lock_file(lock)
+                                print(string.format("\n🎉 Updated %d/%d plugins", updated_count, total))
+                            end)
+                        end
+                    end
+                })
+            end
+        })
+    end
+
     return updated_count
 end
 
@@ -601,36 +639,66 @@ function M.lock()
     local lock = {}
 
     local handle = io.popen('find "' .. M.config.install_path .. '" -name ".git" -type d 2>/dev/null')
+    local plugins_to_lock = {}
 
     if handle then
         for git_dir in handle:lines() do
             local plugin_dir = git_dir:gsub('/.git$', '')
             local plugin_name = plugin_dir:match("([^/]+)$")
-
             if vim.fn.isdirectory(git_dir) == 1 then
-                local hash = get_commit_hash(plugin_dir)
-                if hash then
-                    local repo_url = plugin_name
-                    local remote_cmd = string.format('git -C "%s" remote get-url origin', plugin_dir)
-                    local remote = vim.fn.system(remote_cmd):gsub('%s+', '')
-                    if remote ~= '' then
-                        repo_url = remote:gsub('^https://github.com/', ''):gsub('%.git$', '')
-                    end
-                    lock[repo_url] = {
-                        name = plugin_name,
-                        hash = hash
-                    }
-                    print('  Locked: ' .. repo_url .. ' @ ' .. hash:sub(1, 7))
-                end
+                table.insert(plugins_to_lock, {
+                    plugin_dir = plugin_dir,
+                    plugin_name = plugin_name
+                })
             end
         end
         handle:close()
     end
 
-    local lock_count = 0
-    for _ in pairs(lock) do lock_count = lock_count + 1 end
-    write_lock_file(lock)
-    print(string.format("🔒 Locked %d plugins in %s", lock_count, get_lock_file_path()))
+    if #plugins_to_lock == 0 then
+        print("No plugins to lock")
+        return {}
+    end
+
+    local total = #plugins_to_lock
+    local completed = 0
+
+    for _, plugin_info in ipairs(plugins_to_lock) do
+        local plugin_dir = plugin_info.plugin_dir
+        local plugin_name = plugin_info.plugin_name
+
+        vim.fn.jobstart({'git', '-C', plugin_dir, 'rev-parse', 'HEAD'}, {
+            on_exit = function(_, code)
+                if code == 0 then
+                    local remote_cmd = string.format('git -C "%s" remote get-url origin', plugin_dir)
+                    local remote = vim.fn.system(remote_cmd):gsub('%s+', '')
+                    local repo_url = plugin_name
+                    if remote ~= '' and vim.v.shell_error == 0 then
+                        repo_url = remote:gsub('^https://github.com/', ''):gsub('%.git$', '')
+                    end
+                    lock[repo_url] = {
+                        name = plugin_name,
+                        hash = vim.fn.system({'git', '-C', plugin_dir, 'rev-parse', 'HEAD'}):gsub('%s+', '')
+                    }
+                end
+
+                completed = completed + 1
+
+                if completed == total then
+                    vim.schedule(function()
+                        write_lock_file(lock)
+                        local lock_count = 0
+                        for _ in pairs(lock) do lock_count = lock_count + 1 end
+                        print(string.format("🔒 Locked %d plugins in %s", lock_count, get_lock_file_path()))
+                        for repo, info in pairs(lock) do
+                            print('  ' .. repo .. ' @ ' .. info.hash:sub(1, 7))
+                        end
+                    end)
+                end
+            end
+        })
+    end
+
     return lock
 end
 
