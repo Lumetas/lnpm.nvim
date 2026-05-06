@@ -49,28 +49,105 @@ local function normalize_repo_url(repo)
     return repo
 end
 
+local function get_lock_file_path()
+    return vim.fn.stdpath('config') .. '/lnpm.lock.json'
+end
+
+local function read_lock_file()
+    local path = get_lock_file_path()
+    local file = io.open(path, 'r')
+    if not file then
+        return {}
+    end
+    local content = file:read('*all')
+    file:close()
+    if content == nil or content == '' then
+        return {}
+    end
+    local ok, data = pcall(vim.json.decode, content)
+    if not ok then
+        vim.notify('Failed to parse lock file: ' .. tostring(data), vim.log.levels.WARN)
+        return {}
+    end
+    return data.plugins or {}
+end
+
+local function write_lock_file(plugins)
+    local path = get_lock_file_path()
+    local data = {
+        version = 1,
+        plugins = plugins
+    }
+    local file = io.open(path, 'w')
+    if not file then
+        vim.notify('Failed to write lock file: ' .. path, vim.log.levels.ERROR)
+        return
+    end
+    local ok, json = pcall(vim.json.encode, data)
+    if not ok then
+        vim.notify('Failed to encode lock file: ' .. tostring(json), vim.log.levels.ERROR)
+        file:close()
+        return
+    end
+    file:write(json)
+    file:close()
+end
+
+local function get_commit_hash(plugin_dir)
+    local cmd = string.format('git -C "%s" rev-parse HEAD', plugin_dir)
+    local result = vim.fn.system(cmd):gsub('%s+', '')
+    if vim.v.shell_error ~= 0 or result == '' then
+        return nil
+    end
+    return result
+end
+
 -- Установка плагина
 local function install_plugin(repo, opts, callback)
     local plugin_name = get_plugin_name(repo)
     local install_dir = M.config.install_path .. plugin_name
     local repo_url = normalize_repo_url(repo)
-    
+
     ensure_dir(M.config.install_path)
-    
+
+    local lock = read_lock_file()
+    local lock_key = repo
+    local locked_hash = lock[lock_key] and lock[lock_key].hash or nil
+
     local cmd = {'git', 'clone', '--depth=1', repo_url, install_dir}
-    
+
     vim.fn.jobstart(cmd, {
         on_exit = function(_, code)
             if code == 0 then
-				vim.notify('Installed ' .. plugin_name, vim.log.levels.INFO)
-                -- Удаляем .git если требуется
-                if opts.git == false then
-                    local git_dir = install_dir .. '/.git'
-                    vim.fn.delete(git_dir, 'rf')
+                if locked_hash then
+                    local fetch_cmd = {'git', '-C', install_dir, 'fetch', '--depth=1', 'origin', locked_hash}
+                    vim.fn.jobstart(fetch_cmd, {
+                        on_exit = function(_, fetch_code)
+                            if fetch_code == 0 then
+                                local checkout_cmd = {'git', '-C', install_dir, 'checkout', locked_hash}
+                                vim.fn.jobstart(checkout_cmd, {
+                                    on_exit = function(_, checkout_code)
+                                        if checkout_code == 0 then
+                                            finish_install(plugin_name, install_dir, opts, callback)
+                                        else
+                                            vim.schedule(function()
+                                                vim.notify('Failed to checkout locked hash ' .. locked_hash .. ' for ' .. plugin_name, vim.log.levels.WARN)
+                                            end)
+                                            finish_install(plugin_name, install_dir, opts, callback)
+                                        end
+                                    end
+                                })
+                            else
+                                vim.schedule(function()
+                                    vim.notify('Failed to fetch locked hash ' .. locked_hash .. ' for ' .. plugin_name, vim.log.levels.WARN)
+                                end)
+                                finish_install(plugin_name, install_dir, opts, callback)
+                            end
+                        end
+                    })
+                else
+                    finish_install(plugin_name, install_dir, opts, callback)
                 end
-                
-                installation_cache[plugin_name] = true
-                callback(true, plugin_name)
             else
                 callback(false, 'Installation failed with exit code: ' .. code)
             end
@@ -83,6 +160,16 @@ local function install_plugin(repo, opts, callback)
             end
         end
     })
+end
+
+local function finish_install(plugin_name, install_dir, opts, callback)
+    vim.notify('Installed ' .. plugin_name, vim.log.levels.INFO)
+    if opts.git == false then
+        local git_dir = install_dir .. '/.git'
+        vim.fn.delete(git_dir, 'rf')
+    end
+    installation_cache[plugin_name] = true
+    callback(true, plugin_name)
 end
 
 -- Загрузка плагина в runtime
@@ -232,20 +319,36 @@ function M.make(identifier, opts)
         
         if not is_plugin_installed(plugin_name) then
             vim.notify('Installing plugin: ' .. identifier, vim.log.levels.INFO)
-            
+
             local install_dir = M.config.install_path .. plugin_name
             local repo_url = normalize_repo_url(identifier)
-            
+
             ensure_dir(M.config.install_path)
-            
-            -- Синхронная установка для make
+
+            local lock = read_lock_file()
+            local locked_hash = lock[identifier] and lock[identifier].hash or nil
+
             local cmd = string.format('git clone --depth=1 %s %s', repo_url, install_dir)
             local result = vim.fn.system(cmd)
-            
+
             if vim.v.shell_error ~= 0 then
                 error('Failed to install ' .. identifier .. ': ' .. (result or 'unknown error'))
             end
-            
+
+            if locked_hash then
+                local fetch_cmd = string.format('git -C "%s" fetch --depth=1 origin %s', install_dir, locked_hash)
+                local fetch_result = vim.fn.system(fetch_cmd)
+                if vim.v.shell_error == 0 then
+                    local checkout_cmd = string.format('git -C "%s" checkout %s', install_dir, locked_hash)
+                    local checkout_result = vim.fn.system(checkout_cmd)
+                    if vim.v.shell_error ~= 0 then
+                        vim.notify('Failed to checkout locked hash ' .. locked_hash .. ' for ' .. plugin_name, vim.log.levels.WARN)
+                    end
+                else
+                    vim.notify('Failed to fetch locked hash ' .. locked_hash .. ' for ' .. plugin_name, vim.log.levels.WARN)
+                end
+            end
+
             if opts.git == false then
                 local git_dir = install_dir .. '/.git'
                 vim.fn.delete(git_dir, 'rf')
@@ -434,22 +537,46 @@ function M.update()
     print("🔄 Updating plugins...")
     local plugins_dir = M.config.install_path
     local updated_count = 0
-    
+    local lock = read_lock_file()
+
     local handle = io.popen('find "' .. plugins_dir .. '" -name ".git" -type d 2>/dev/null')
-    
+
     if handle then
         for git_dir in handle:lines() do
             local plugin_dir = git_dir:gsub('/.git$', '')
             local plugin_name = plugin_dir:match("([^/]+)$")
-            
+
             if vim.fn.isdirectory(git_dir) == 1 then
                 print('Updating: ' .. plugin_name)
-                
+
                 local update_cmd = string.format('git -C "%s" pull --rebase', plugin_dir)
                 local result = vim.fn.system(update_cmd)
-                
+
                 if vim.v.shell_error == 0 then
                     updated_count = updated_count + 1
+                    local hash = get_commit_hash(plugin_dir)
+                    if hash then
+                        local found = false
+                        for repo, info in pairs(lock) do
+                            if get_plugin_name(repo) == plugin_name then
+                                lock[repo].hash = hash
+                                found = true
+                                break
+                            end
+                        end
+                        if not found then
+                            local remote_cmd = string.format('git -C "%s" remote get-url origin', plugin_dir)
+                            local remote = vim.fn.system(remote_cmd):gsub('%s+', '')
+                            local repo_url = plugin_name
+                            if remote ~= '' and vim.v.shell_error == 0 then
+                                repo_url = remote:gsub('^https://github.com/', ''):gsub('%.git$', '')
+                            end
+                            lock[repo_url] = {
+                                name = plugin_name,
+                                hash = hash
+                            }
+                        end
+                    end
                     print('✅ Updated: ' .. plugin_name)
                 else
                     print('❌ Failed to update: ' .. plugin_name .. ': ' .. result)
@@ -460,9 +587,48 @@ function M.update()
         end
         handle:close()
     end
-    
+
+    write_lock_file(lock)
     print(string.format("\n🎉 Updated %d plugins", updated_count))
     return updated_count
+end
+
+function M.lock()
+    print("🔒 Generating lock file...")
+    local lock = {}
+
+    local handle = io.popen('find "' .. M.config.install_path .. '" -name ".git" -type d 2>/dev/null')
+
+    if handle then
+        for git_dir in handle:lines() do
+            local plugin_dir = git_dir:gsub('/.git$', '')
+            local plugin_name = plugin_dir:match("([^/]+)$")
+
+            if vim.fn.isdirectory(git_dir) == 1 then
+                local hash = get_commit_hash(plugin_dir)
+                if hash then
+                    local repo_url = plugin_name
+                    local remote_cmd = string.format('git -C "%s" remote get-url origin', plugin_dir)
+                    local remote = vim.fn.system(remote_cmd):gsub('%s+', '')
+                    if remote ~= '' then
+                        repo_url = remote:gsub('^https://github.com/', ''):gsub('%.git$', '')
+                    end
+                    lock[repo_url] = {
+                        name = plugin_name,
+                        hash = hash
+                    }
+                    print('  Locked: ' .. repo_url .. ' @ ' .. hash:sub(1, 7))
+                end
+            end
+        end
+        handle:close()
+    end
+
+    local lock_count = 0
+    for _ in pairs(lock) do lock_count = lock_count + 1 end
+    write_lock_file(lock)
+    print(string.format("🔒 Locked %d plugins in %s", lock_count, get_lock_file_path()))
+    return lock
 end
 
 function M.get_plugin(name_or_repo)
@@ -471,6 +637,10 @@ end
 
 function M.is_loaded(plugin_name)
     return loaded_plugins[plugin_name] == true
+end
+
+function M.get_lock_file_path()
+    return get_lock_file_path()
 end
 
 -- Настройка команд
@@ -509,11 +679,35 @@ function M.setup_commands()
     vim.api.nvim_create_user_command('LnpmStatus', function()
         local status = M.list()
         local pending = #pending_installations
-        
+
         if pending > 0 then
             print(string.format("\n⏳ %d plugin(s) pending installation", pending))
         end
     end, {desc = 'Show installation status'})
+
+    vim.api.nvim_create_user_command('LnpmLock', function()
+        M.lock()
+    end, {desc = 'Generate lock file with plugin hashes'})
+
+    vim.api.nvim_create_user_command('LnpmLockStatus', function()
+        local lock = read_lock_file()
+        local count = 0
+        for _ in pairs(lock) do count = count + 1 end
+        if count == 0 then
+            print('No lock file found. Run :LnpmLock to generate one.')
+            return
+        end
+        local lines = {
+            '🔒 LOCK FILE STATUS',
+            'Path: ' .. get_lock_file_path(),
+            'Locked plugins: ' .. count,
+            ''
+        }
+        for repo, info in pairs(lock) do
+            lines[#lines + 1] = '  ' .. repo .. ' @ ' .. info.hash:sub(1, 7)
+        end
+        print(table.concat(lines, '\n'))
+    end, {desc = 'Show lock file status'})
 end
 
 -- Экспортируемые данные для отладки
@@ -523,7 +717,9 @@ M._state = {
     loaded_plugins = loaded_plugins,
     plugin_objects = plugin_objects,
     registered_plugins = registered_plugins,
-    pending_installations = pending_installations
+    pending_installations = pending_installations,
+    get_lock = read_lock_file,
+    lock_file_path = get_lock_file_path()
 }
 
 -- Автоматическая настройка
