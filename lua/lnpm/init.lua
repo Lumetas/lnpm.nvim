@@ -102,6 +102,16 @@ local function get_commit_hash(plugin_dir)
     return result
 end
 
+local function finish_install(plugin_name, install_dir, opts, callback)
+    vim.notify('Installed ' .. plugin_name, vim.log.levels.INFO)
+    if opts.git == false then
+        local git_dir = install_dir .. '/.git'
+        vim.fn.delete(git_dir, 'rf')
+    end
+    installation_cache[plugin_name] = true
+    callback(true, plugin_name)
+end
+
 -- Установка плагина
 local function install_plugin(repo, opts, callback)
     local plugin_name = get_plugin_name(repo)
@@ -160,16 +170,6 @@ local function install_plugin(repo, opts, callback)
             end
         end
     })
-end
-
-local function finish_install(plugin_name, install_dir, opts, callback)
-    vim.notify('Installed ' .. plugin_name, vim.log.levels.INFO)
-    if opts.git == false then
-        local git_dir = install_dir .. '/.git'
-        vim.fn.delete(git_dir, 'rf')
-    end
-    installation_cache[plugin_name] = true
-    callback(true, plugin_name)
 end
 
 -- Загрузка плагина в runtime
