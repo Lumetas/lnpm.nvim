@@ -549,8 +549,11 @@ function M.update()
             if vim.fn.isdirectory(git_dir) == 1 then
                 print('Updating: ' .. plugin_name)
 
-                local update_cmd = string.format('git -C "%s" pull --rebase', plugin_dir)
-                local result = vim.fn.system(update_cmd)
+                local fetch_cmd = string.format('git -C "%s" fetch origin', plugin_dir)
+                vim.fn.system(fetch_cmd)
+
+                local reset_cmd = string.format('git -C "%s" reset --hard origin/HEAD', plugin_dir)
+                local result = vim.fn.system(reset_cmd)
 
                 if vim.v.shell_error == 0 then
                     updated_count = updated_count + 1
